@@ -6,7 +6,7 @@
 
   - The implementation for "Deep learning for remote sensing image super-resolution: A comprehensive review and a new real-matched benchmark"
 
-  - Our review paper has just been initially submitted to the journal.
+  - Our review manuscript has been submitted to the journal and is awaiting review.
 
   - Here is the first commit, more illustrations of the implementation will be released soon.
 
