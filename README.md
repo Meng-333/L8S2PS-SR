@@ -1,10 +1,10 @@
 
 
-# **Deep learning for remote sensing image super-resolution: A comprehensive review and a new real-matched benchmark**
+# **Deep learning for remote sensing image super-resolution: A comprehensive review and a new real-world benchmark**
 
 ## Paper
 
-  - The implementation for "Deep learning for remote sensing image super-resolution: A comprehensive review and a new real-matched benchmark"
+  - The implementation for "Deep learning for remote sensing image super-resolution: A comprehensive review and a new real-world benchmark"
 
   - Our review manuscript has been submitted to the journal and is awaiting review.
 
@@ -91,7 +91,7 @@ Our folder structure is as follows:
 
 ## Abstract
 
-Single-image super-resolution (SISR) is a long-standing research topic in the low-level vision of remote sensing. Its goal is to reconstruct a corresponding high-resolution (HR) image from a low-resolution (LR) image. In recent years, SISR for remote sensing has attracted widespread attention due to its potential applications in small object detection, land cover classification, and precision agriculture, and has witnessed the rapid development of deep learning methods. However, a comprehensive review of these methods remains lacking. To address this gap, this paper systematically and comprehensively reviews deep learning-based SISR papers from the past decade. Specifically, we first introduce the different deep learning network architectures used. Second, we provide a comprehensive summary of SISR algorithms for optical remote sensing images, including methodology, commonly used loss functions, remote sensing datasets, and evaluation metrics. To further promote the field of remote sensing super-resolution (SR), we propose a dataset for real-world super-resolution, L8S2PS-SR, which consists of 195 precisely aligned Landsat 8-Sentinel 2-PlanetScope satellite image pairs captured at different seasons and geographical locations. Furthermore, we implement 12 representative methods on publicly available datasets and our proposed L8S2PS-SR dataset to evaluate their performance. Finally, some challenges and future research directions in the field of remote sensing SISR are discussed, aiming to provide some research ideas for subsequent researchers. Our dataset is shared at https://github.com/Meng-333/L8S2PS-SR.
+Single-image super-resolution (SISR) is a long-standing research topic in the low-level vision of remote sensing. Its goal is to reconstruct a corresponding high-resolution (HR) image from a low-resolution (LR) image. In recent years, SISR for remote sensing has attracted widespread attention due to its potential applications in small object detection, land cover classification, and precision agriculture, and has witnessed the rapid development of deep learning methods. However, a comprehensive review of these methods and real-world datasets remains lacking. To address this gap, this paper systematically and comprehensively reviews deep learning-based SISR papers from the past decade. Specifically, we first introduce the different deep learning network architectures used. Second, we provide a comprehensive summary of SISR algorithms for optical remote sensing images, including methodology, commonly used loss functions, remote sensing datasets, and evaluation metrics. To further promote the field of remote sensing super-resolution (SR), we propose a global-scale, versatile, and abundant dataset for real-world super-resolution, L8S2PS-SR, which consists of 195 precisely aligned Landsat 8-Sentinel 2-PlanetScope satellite image pairs captured at different seasons and geographical locations. Furthermore, we implement 12 representative methods on publicly available datasets and our proposed L8S2PS-SR dataset to evaluate their performance. Finally, some challenges and future research directions in the field of remote sensing SISR are discussed, aiming to provide some research ideas for subsequent researchers. Our dataset is shared at https://github.com/Meng-333/L8S2PS-SR.
 
 
 
