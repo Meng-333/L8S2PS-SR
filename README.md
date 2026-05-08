@@ -12,7 +12,7 @@
 
     
     
-    ![](/fig/fig.png)
+    ![](/fig/fig1.png)
 
 ## Folder Structure
 
