@@ -1,12 +1,12 @@
 
 
-# **Deep learning for remote sensing image super-resolution: A comprehensive review and a new real-world benchmark**
+# **Deep Learning for Remote Sensing Image Super-Resolution: A Comprehensive Review and a New Real-world Benchmark**
 
 ## Paper
 
-  - The implementation for "Deep learning for remote sensing image super-resolution: A comprehensive review and a new real-world benchmark"
+  - The implementation for "Deep Learning for Remote Sensing Image Super-Resolution: A Comprehensive Review and a New Real-world Benchmark"
 
-  - Our review manuscript has been submitted to the journal and is awaiting review.
+  - Our review manuscript has been submitted to the journal and is currently under review.
 
   - Here is the first commit, more illustrations of the implementation will be released soon.
 
