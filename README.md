@@ -7,9 +7,11 @@
   - Fanen Meng, Sensen Wu, Yi Xiao, Qiangqiang Yuan, Zhiguo Jiang, Fengying Xie, Zhenhong Du, Haopeng Zhang
   - *IEEE Geoscience and Remote Sensing Magazine*, vol. 62, pp. 1-22
   - https://ieeexplore.ieee.org/document/10375518
+    
 
+![](/fig/fig1.png)
 
-    ![](/fig/fig1.png)
+Fig. 1. An outline of this paper.
 
 ## Folder Structure
 
@@ -84,6 +86,7 @@ Our folder structure is as follows:
 
   ![](/fig/ROIs.png)
 
+Fig. 10. Distribution of randomly sampled ROIs over the Earth’s landmass: (a) original ROIs, (b) the final available ROIs after data selection and manual inspection, and some examples of real-world remote sensing images.
   
 
 ## Abstract
@@ -98,12 +101,23 @@ Single-image super-resolution (SISR) is a long-standing research topic in the lo
 
 ![](/fig/L8S2_SR.png)
 
+Fig. 14. 3-time SR results obtained by different SOTA super-resolution methods on the Landsat 8/Sentinel-2 building scenes. Bold denotes the best metric result. 
+
 ### 2.Super-Resolution on Sentinel 2 Multispectral Images
 
 ![](/fig/S2PS_SR.png)
 
+Fig. 15. 3-time SR results obtained by different SOTA super-resolution methods on the Sentinel-2/PlanetScope storage tank scenes. Bold denotes the best metric result. 
 
+## Citation
+
+If our code helps your research or work, please consider citing our paper. 
+
+```
+F. Meng et al., "Deep Learning for Remote Sensing Image Super-Resolution: A Comprehensive Review and a New Real-world Benchmark," in IEEE Geoscience and Remote Sensing Magazine, vol. 62, pp. 1-22, 2026, Art no. 5400822,
+doi: 10.1109/MGRS.2026.3706999.
+```
 
 ## Contact
 
-If you have any questions about it, please feel free to let me know. (email:[mengfanen@tmslab.cn，12238036@zju.edu.cn]
+If you have any questions about it, please feel free to let me know. (email:[mengfanen@tmslab.cn; 12238036@zju.edu.cn]
