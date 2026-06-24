@@ -18,6 +18,20 @@ Our folder structure is as follows:
 ```
 ├── code (python and javascript)
 │   ├── SR Model (12 deep learning SR models for the L8S2PS-SR dataset)
+│   │   ├── dataset
+│   │   ├── MSI_SR_model_x3
+│   │   │   ├── main_amssrn.py
+│   │   │   ├── main_drcan.py
+│   │   │   ├── main_dssr.py
+│   │   │   ├── main_egasr.py
+│   │   │   ├── main_esrgan.py
+│   │   │   ├── main_hat.py
+│   │   │   ├── main_ndsrgan.py
+│   │   │   ├── main_sradsgan.py
+│   │   │   ├── main_sragan.py
+│   │   │   ├── main_swinir.py
+│   │   │   ├── main_transenet.py
+│   │   │   ├── main_ttst.py
 │   ├── Data preparation on GEE
 │   │   ├── Global Map
 │   │   │   ├── ne_50m_land
