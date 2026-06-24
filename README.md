@@ -112,7 +112,7 @@ Fig. 15. 3-time SR results obtained by different SOTA super-resolution methods o
 
 ## Citation
 
-If our code helps your research or work, please consider citing our paper. 
+If you find our code and dataset helpful for your research or work, please consider citing our paper. 
 
 ```
 F. Meng et al., "Deep Learning for Remote Sensing Image Super-Resolution: A Comprehensive Review and a New Real-world Benchmark,"
