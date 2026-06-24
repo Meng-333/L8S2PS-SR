@@ -19,6 +19,9 @@ Our folder structure is as follows:
 ├── code (python and javascript)
 │   ├── SR Model (12 deep learning SR models for the L8S2PS-SR dataset)
 │   ├── Data preparation on GEE
+│   │   ├── Global Map
+│   │   │   ├── ne_50m_land
+│   │   │   ├── ne_50m_urban_areas
 │   │   ├── ROIs_Points_Shp.js   
 │   │   ├── ROIs100_spring.js  
 │   │   ├── ROIs200_summer.js 
