@@ -17,7 +17,7 @@ Our folder structure is as follows:
 
 ```
 ├── code (python and javascript)
-│   ├── SR Model (12 deep learning SR models)
+│   ├── SR Model (12 deep learning SR models for the L8S2PS-SR dataset)
 │   ├── Data preparation on GEE
 │   │   ├── ROIs_Points_Shp.js   
 │   │   ├── ROIs100_spring.js  
