@@ -1,0 +1,1093 @@
+import argparse
+import os
+import numpy as np
+import time
+import math
+import itertools
+import sys
+from collections import OrderedDict
+from PIL import Image
+import torchvision.transforms as transforms
+from torchvision.utils import save_image
+
+from torch.utils.data import DataLoader
+from torchvision import datasets
+from torch.autograd import Variable
+import torch.nn as nn
+import torch.nn.functional as F
+import torch
+
+from skimage.measure import compare_ssim
+from skimage.measure import compare_mse
+from skimage.measure import compare_psnr
+from skimage.measure import compare_nrmse
+from torchvision.transforms import ToPILImage, ToTensor
+from torchvision.models import vgg19
+
+from utils import utils as srutils
+from utils.logger import Logger, PrintLogger
+from data import *
+# from loss import GANLoss
+# from architecture import RRDBNet, Discriminator_VGG_256, VGGFeatureExtractor
+# from model.base_networks import *
+from torch.nn import Parameter
+from data.data import get_training_datasets, get_test_datasets, get_RGB_trainDataset, get_RGB_testDataset
+import torch.nn.init as init
+
+
+def weights_init_normal(m, mean=0.0, std=0.02):
+    classname = m.__class__.__name__
+    if classname.find('Linear') != -1:
+        m.weight.data.normal_(mean, std)
+        if m.bias is not None:
+            m.bias.data.zero_()
+    elif classname.find('Conv2d') != -1:
+        m.weight.data.normal_(mean, std)
+        if m.bias is not None:
+            m.bias.data.zero_()
+    elif classname.find('ConvTranspose2d') != -1:
+        m.weight.data.normal_(mean, std)
+        if m.bias is not None:
+            m.bias.data.zero_()
+    elif classname.find('Norm') != -1:
+        m.weight.data.normal_(1.0, 0.02)
+        if m.bias is not None:
+            m.bias.data.zero_()
+
+class FeatureExtractor(nn.Module):
+    def __init__(self):
+        super(FeatureExtractor, self).__init__()
+
+        vgg19_model = vgg19(pretrained=True)
+
+        # Extracts features at the 11th layer
+        self.feature_extractor = nn.Sequential(*list(vgg19_model.features.children())[:12])
+
+    def forward(self, img):
+        out = self.feature_extractor(img)
+        return out
+
+
+
+
+
+
+
+
+def initialize_weights(net_l, scale=1):
+    if not isinstance(net_l, list):
+        net_l = [net_l]
+    for net in net_l:
+        for m in net.modules():
+            if isinstance(m, nn.Conv2d):
+                init.kaiming_normal_(m.weight, a=0, mode='fan_in')
+                m.weight.data *= scale  # for residual block
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.Linear):
+                init.kaiming_normal_(m.weight, a=0, mode='fan_in')
+                m.weight.data *= scale
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                init.constant_(m.weight, 1)
+                init.constant_(m.bias.data, 0.0)
+
+
+def default_conv(in_channels, out_channels, kernel_size, bias=True):
+    return nn.Conv2d(
+        in_channels, out_channels, kernel_size,
+        padding=(kernel_size // 2), bias=bias)
+
+
+class Upsampler(nn.Sequential):
+    def __init__(self, conv, scale, n_feat, bn=False, act=False, bias=True):
+
+        m = []
+        if (scale & (scale - 1)) == 0:  # Is scale = 2^n?
+            for _ in range(int(math.log(scale, 2))):
+                m.append(conv(n_feat, 4 * n_feat, 3, bias))
+                m.append(nn.PixelShuffle(2))
+                if bn:
+                    m.append(nn.BatchNorm2d(n_feat))
+                if act:
+                    m.append(act())
+        elif scale == 3:
+            m.append(conv(n_feat, 9 * n_feat, 3, bias))
+            m.append(nn.PixelShuffle(3))
+            if bn:
+                m.append(nn.BatchNorm2d(n_feat))
+            if act:
+                m.append(act())
+        else:
+            raise NotImplementedError
+
+        super(Upsampler, self).__init__(*m)
+
+
+class EdgeConv(nn.Module):
+    def __init__(self, conv_edge, in_channels, out_channels):
+        super(EdgeConv, self).__init__()
+
+        self.conv_edge = conv_edge
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+        if self.conv_edge == 'conv1-sobelx':
+            conv0 = torch.nn.Conv2d(self.in_channels, self.out_channels, kernel_size=1, padding=0)
+            self.k0 = conv0.weight
+            self.b0 = conv0.bias
+            # init scale & bias
+            scale = torch.randn(size=(self.out_channels, 1, 1, 1)) * 1e-3
+            self.scale = nn.Parameter(scale)
+            bias = torch.randn(self.out_channels) * 1e-3
+            bias = torch.reshape(bias, (self.out_channels,))
+            self.bias = nn.Parameter(bias)
+            # init template
+            self.template = torch.zeros((self.out_channels, 1, 3, 3), dtype=torch.float32)
+            for i in range(self.out_channels):
+                self.template[i, 0, 0, 0] = 1.0
+                self.template[i, 0, 1, 0] = 2.0
+                self.template[i, 0, 2, 0] = 1.0
+                self.template[i, 0, 0, 2] = -1.0
+                self.template[i, 0, 1, 2] = -2.0
+                self.template[i, 0, 2, 2] = -1.0
+            self.template = nn.Parameter(data=self.template, requires_grad=False)
+
+        elif self.conv_edge == 'conv1-sobely':
+            conv0 = torch.nn.Conv2d(self.in_channels, self.out_channels, kernel_size=1, padding=0)
+            self.k0 = conv0.weight
+            self.b0 = conv0.bias
+            # init scale & bias
+            scale = torch.randn(size=(self.out_channels, 1, 1, 1)) * 1e-3
+            self.scale = nn.Parameter(torch.FloatTensor(scale))
+            bias = torch.randn(self.out_channels) * 1e-3
+            bias = torch.reshape(bias, (self.out_channels,))
+            self.bias = nn.Parameter(torch.FloatTensor(bias))
+            # init template
+            self.template = torch.zeros((self.out_channels, 1, 3, 3), dtype=torch.float32)
+            for i in range(self.out_channels):
+                self.template[i, 0, 0, 0] = 1.0
+                self.template[i, 0, 0, 1] = 2.0
+                self.template[i, 0, 0, 2] = 1.0
+                self.template[i, 0, 2, 0] = -1.0
+                self.template[i, 0, 2, 1] = -2.0
+                self.template[i, 0, 2, 2] = -1.0
+            self.template = nn.Parameter(data=self.template, requires_grad=False)
+
+        elif self.conv_edge == 'conv1-laplacian':
+            conv0 = torch.nn.Conv2d(self.in_channels, self.out_channels, kernel_size=1, padding=0)
+            self.k0 = conv0.weight
+            self.b0 = conv0.bias
+            # init scale & bias
+            scale = torch.randn(size=(self.out_channels, 1, 1, 1)) * 1e-3
+            self.scale = nn.Parameter(torch.FloatTensor(scale))
+            bias = torch.randn(self.out_channels) * 1e-3
+            bias = torch.reshape(bias, (self.out_channels,))
+            self.bias = nn.Parameter(torch.FloatTensor(bias))
+            # init template
+            self.template = torch.zeros((self.out_channels, 1, 3, 3), dtype=torch.float32)
+            for i in range(self.out_channels):
+                self.template[i, 0, 0, 1] = 1.0
+                self.template[i, 0, 1, 0] = 1.0
+                self.template[i, 0, 1, 2] = 1.0
+                self.template[i, 0, 2, 1] = 1.0
+                self.template[i, 0, 1, 1] = -4.0
+            self.template = nn.Parameter(data=self.template, requires_grad=False)
+        else:
+            raise ValueError('the type of seqconv is not supported!')
+
+    def forward(self, x):
+        y0 = F.conv2d(input=x, weight=self.k0, bias=self.b0, stride=1)
+        y0 = F.pad(y0, (1, 1, 1, 1), 'constant', 0)
+        b0_pad = self.b0.view(1, -1, 1, 1)
+        y0[:, :, 0:1, :] = b0_pad
+        y0[:, :, -1:, :] = b0_pad
+        y0[:, :, :, 0:1] = b0_pad
+        y0[:, :, :, -1:] = b0_pad
+        y1 = F.conv2d(input=y0, weight=self.scale * self.template, bias=self.bias, stride=1, groups=self.out_channels)
+        return y1
+
+
+class ResidualBlock_noBN(nn.Module):
+    '''Residual block w/o BN
+    ---Conv-Act-Conv-+-
+     |________________|
+    '''
+
+    def __init__(self, nf=64, at='prelu'):
+        super(ResidualBlock_noBN, self).__init__()
+        self.conv1 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+        self.conv2 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+
+        self.act = action_function(nf, at)
+
+        # initialization
+        initialize_weights([self.conv1, self.conv2], 0.1)
+
+    def forward(self, x):
+        identity = x
+        out = self.act(self.conv1(x))
+        out = self.conv2(out)
+        return identity + out
+
+
+def action_function(n_feat, act_type):
+    if act_type == 'prelu':
+        act = nn.PReLU(num_parameters=n_feat)
+    elif act_type == 'relu':
+        act = nn.ReLU(inplace=True)
+    elif act_type == 'rrelu':
+        act = nn.RReLU(lower=-0.05, upper=0.05)
+    elif act_type == 'lrelu':
+        act = nn.LeakyReLU(negative_slope=0.1, inplace=True)
+    elif act_type == 'softplus':
+        act = nn.Softplus()
+    elif act_type == 'linear':
+        pass
+    else:
+        raise ValueError('The type of activation if not support!')
+    return act
+
+
+
+
+
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super(SpatialAttention, self).__init__()
+
+        self.conv1 = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        x = torch.cat([avg_out, max_out], dim=1)
+        x = self.conv1(x)
+        return self.sigmoid(x)
+
+
+class CoreModule(nn.Module):
+    def __init__(self, features, M, G, r, stride=1, L=32):
+        super(CoreModule, self).__init__()
+        d = max(int(features / r), L)
+        self.M = M
+        self.features = features
+
+        self.edgeconvs = nn.ModuleList([])
+
+        self.recon_trunk = ResidualBlock_noBN(nf=features, at='prelu')
+
+        self.conv3x3 = nn.Conv2d(features, features, kernel_size=3, padding=1)
+
+        EC_combination = ['conv1-sobelx', 'conv1-sobely', 'conv1-laplacian']
+        for i in range(len(EC_combination)):
+            self.edgeconvs.append(nn.Sequential(
+                EdgeConv(EC_combination[i], features, features),
+            ))
+
+        self.conv_reduce = nn.Conv2d(features * len(EC_combination), features, kernel_size=1, padding=0)
+        self.sa = SpatialAttention()
+
+        self.fc = nn.Linear(features, d)
+        self.fcs = nn.ModuleList([])
+        for i in range(M):
+            self.fcs.append(
+                nn.Linear(d, features)
+            )
+        self.softmax = nn.Softmax(dim=1)
+
+    def forward(self, x):
+        based_x = x
+
+        out = self.recon_trunk(based_x)
+
+        for i, edgeconv in enumerate(self.edgeconvs):
+            fea = edgeconv(x)
+            if i == 0:
+                feas = fea
+            else:
+                feas = torch.cat([feas, fea], dim=1)
+        feas = self.conv_reduce(feas)
+        feas = self.sa(feas) * feas
+
+        feas_f = torch.cat([out.unsqueeze_(dim=1), feas.unsqueeze_(dim=1)], dim=1)
+        fea_f_U = torch.sum(feas_f, dim=1)
+
+        fea_f_s = fea_f_U.mean(-1).mean(-1)
+        fea_f_z = self.fc(fea_f_s)
+        for i, fc in enumerate(self.fcs):
+            vector_f = fc(fea_f_z).unsqueeze_(dim=1)
+            if i == 0:
+                attention_vectors_f = vector_f
+            else:
+                attention_vectors_f = torch.cat([attention_vectors_f, vector_f], dim=1)
+        attention_vectors_f = self.softmax(attention_vectors_f)
+        attention_vectors_f = attention_vectors_f.unsqueeze(-1).unsqueeze(-1)
+        fea_v_out = (feas_f * attention_vectors_f).sum(dim=1)
+
+        return fea_v_out
+
+
+# # Edge-guided Residual Attention Block (EGRAB)
+class EGRAB(nn.Module):
+    def __init__(
+            self, conv, n_feat, kernel_size, reduction,
+            bias=True, bn=False, act=nn.PReLU(), res_scale=1):
+
+        super(EGRAB, self).__init__()
+        modules_body = []
+        for i in range(2):
+            modules_body.append(conv(n_feat, n_feat, kernel_size, bias=bias))
+            if bn:
+                modules_body.append(nn.BatchNorm2d(n_feat))
+            if i == 0:
+                modules_body.append(act)
+
+        modules_body.append(CoreModule(n_feat, M=2, G=8, r=2, stride=1, L=32))
+        self.body = nn.Sequential(*modules_body)
+        self.res_scale = res_scale
+
+    def forward(self, x):
+        res = self.body(x)
+        res += x
+        return res
+
+
+# ## Residual Edge-enhanced Group (REG)
+class REG(nn.Module):
+    def __init__(self, conv, n_feat, kernel_size, reduction, act, res_scale, n_resblocks):
+        super(REG, self).__init__()
+        modules_body = []
+        modules_body = [
+            EGRAB(
+                conv, n_feat, kernel_size, reduction, bias=True, bn=False, act=nn.PReLU(), res_scale=1) \
+            for _ in range(n_resblocks)]
+        modules_body.append(conv(n_feat, n_feat, kernel_size))
+        self.body = nn.Sequential(*modules_body)
+
+    def forward(self, x):
+        res = self.body(x)
+        res += x
+        return res
+
+
+class GeneratorResNet(nn.Module):
+    def __init__(self, in_channels=3, out_channels=3, conv=default_conv, n_resgroups=10, n_resblocks=16,
+                 n_feats=64, reduction=16, upscale_factor=4):
+        super(GeneratorResNet, self).__init__()
+
+        n_resgroups = n_resgroups
+        n_resblocks = n_resblocks
+        n_feats = n_feats
+        kernel_size = 3
+        reduction = reduction
+        scale = upscale_factor
+        self.sf = upscale_factor
+        act = nn.PReLU()
+        self.gamma = nn.Parameter(torch.zeros(1))
+        # define head module
+        modules_head = [conv(3, n_feats, kernel_size)]
+
+        # define body module
+        self.REGs = nn.ModuleList([
+            REG(
+                conv, n_feats, kernel_size, reduction, act=act, res_scale=1, n_resblocks=n_resblocks)
+            for _ in range(n_resgroups)])
+
+        self.conv = conv(n_feats, n_feats, kernel_size)
+
+        # define tail module
+        modules_tail = [
+            Upsampler(conv, scale, n_feats, act=False),
+            conv(n_feats, 3, kernel_size)]
+
+        self.head = nn.Sequential(*modules_head)
+        self.tail = nn.Sequential(*modules_tail)
+
+    def forward(self, x):
+        x_h = self.head(x)
+        xx = self.conv(x_h)
+        residual = xx
+
+        for i, l in enumerate(self.REGs):
+            xx = l(xx) + self.gamma * residual
+
+        xx = self.conv(xx)
+
+        out = self.tail(xx)
+        base = F.interpolate(x, scale_factor=self.sf, mode='bilinear', align_corners=False)
+        out += base
+        return out
+
+
+class EGASR(object):
+    def __init__(self, args):
+        # parameters
+        self.model_name = args.model_name
+        self.train_dataset = args.train_dataset
+        self.test_dataset = args.test_dataset
+        self.crop_size = args.crop_size
+        self.test_crop_size = args.test_crop_size
+        self.hr_height = args.hr_height
+        self.hr_width = args.hr_width
+        self.num_threads = args.num_threads
+        self.num_channels = args.num_channels
+        self.scale_factor = args.scale_factor
+        self.epoch = args.epoch
+        self.num_epochs = args.num_epochs
+        self.save_epochs = args.save_epochs
+        self.batch_size = args.batch_size
+        self.test_batch_size = args.test_batch_size
+        self.lr = args.lr
+        self.b1 = args.b1
+        self.b2 = args.b2
+        self.data_dir = args.data_dir
+        self.root_dir = args.root_dir
+        self.save_dir = args.save_dir
+        self.gpu_mode = args.gpu_mode
+        self.n_cpu = args.n_cpu
+        self.sample_interval = args.sample_interval
+
+        self.clip_value = args.clip_value
+        self.lambda_gp = args.lambda_gp
+        self.gp = args.gp
+        self.penalty_type = args.penalty_type
+        self.grad_penalty_Lp_norm = args.grad_penalty_Lp_norm
+        self.relative = args.relativeGan
+        self.loss_Lp_norm = args.loss_Lp_norm
+        self.weight_gan = args.weight_gan
+        self.weight_content = args.weight_content
+        self.max_train_samples = args.max_train_samples
+
+        self.cuda = True if torch.cuda.is_available() else False
+        # import PerceptualSimilarity
+        from utils import PerceptualSimilarity
+        self.PerceptualModel = PerceptualSimilarity.PerceptualLoss(model='net-lin', net='alex', use_gpu=self.cuda)
+
+        self.log_dict = OrderedDict()
+
+        # set the logger
+        log_dir = os.path.join(self.root_dir, self.save_dir, 'logs')
+        log_freq = 200
+        if not os.path.exists(log_dir):
+            os.mkdir(log_dir)
+        self.logger = Logger(self.model_name, log_dir, log_freq)
+
+    def load_dataset(self, dataset='train', max_samples=20000):
+        if self.num_channels == 1:
+            is_gray = True
+        else:
+            is_gray = False
+
+        if dataset == 'train':
+            print('Loading train dct_datasets...')
+            train_set = get_RGB_trainDataset(self.data_dir, self.train_dataset, self.crop_size, self.scale_factor, is_gray=is_gray)
+            return DataLoader(dataset=train_set, num_workers=self.num_threads, batch_size=self.batch_size, shuffle=True, drop_last=True)
+        elif dataset == 'test':
+            print('Loading test dct_datasets...')
+            test_set = get_RGB_testDataset(self.data_dir, self.test_dataset, self.crop_size, self.scale_factor, is_gray=is_gray)
+            return DataLoader(dataset=test_set, num_workers=self.num_threads, batch_size=self.test_batch_size, shuffle=False, drop_last=True)
+
+    def train(self):
+        device_ids = [0]
+        cuda = True if torch.cuda.is_available() else False
+        self.device = torch.device('cuda' if cuda else 'cpu')
+
+        # Initialize generator and discriminator
+        self.generator = GeneratorResNet(conv=default_conv, n_resgroups=10, n_resblocks=16, n_feats=64, reduction=16,
+                                         upscale_factor=self.scale_factor)
+        self.feature_extractor = FeatureExtractor()
+        # self.feature_extractor = VGGFeatureExtractor(feature_layer=34, use_bn=False, use_input_norm=True, device=self.device)
+
+        # srutils.print_network_to_file(self.generator, save_dir=self.save_dir, tag='Generator', input_size=(1,3,int(256/self.scale_factor),int(256/self.scale_factor)))
+        srutils.print_network_to_file(self.generator, save_dir=self.save_dir, tag='Generator')
+        srutils.print_network_to_file(self.feature_extractor, save_dir=self.save_dir, tag='FeatureExtractor')
+
+
+        # Losses
+        # self.criterion_GAN = torch.nn.MSELoss().to(self.device)
+        if self.loss_Lp_norm=="L1":
+            self.criterion_content = torch.nn.L1Loss().to(self.device)
+        else:
+            self.criterion_content = torch.nn.MSELoss().to(self.device)
+
+        if len(device_ids) > 1:
+            self.generator = nn.DataParallel(self.generator).to(self.device)
+            self.feature_extractor = nn.DataParallel(self.feature_extractor).to(self.device)
+
+        if cuda:
+            self.generator = self.generator.cuda(device_ids[0])
+            self.feature_extractor = self.feature_extractor.cuda(device_ids[0])
+            # self.criterion_GAN = self.criterion_GAN.cuda(device_ids[0])
+            self.criterion_content = self.criterion_content.cuda(device_ids[0])
+
+        model_dir = os.path.join(self.save_dir, 'model')
+        if self.epoch != 0:
+            # Load pretrained models
+            G_model_path = model_dir+'/generator_param_epoch_%d.pkl' % self.epoch
+            self.load_epoch_network(load_path=G_model_path, network=self.generator, strict=True)
+        else:
+            # Initialize weights
+            self.generator.apply(srutils.weights_init_normal)
+
+            #G_model_path = '/g12238036mfe/mfe/ESRRDAN/Result/model/egasr_x3_generator_param.pkl'
+            #self.load_epoch_network(load_path=G_model_path, network=self.generator, strict=False)
+        # Optimizers
+        optimizer_G = torch.optim.Adam(self.generator.parameters(), lr=self.lr, betas=(self.b1, self.b2))
+
+        # Inputs & targets memory allocation
+        Tensor = torch.cuda.FloatTensor if cuda else torch.Tensor
+        input_lr = Tensor(self.batch_size, self.num_channels, self.crop_size // self.scale_factor, self.crop_size // self.scale_factor)
+        input_hr = Tensor(self.batch_size, self.num_channels, self.crop_size, self.crop_size)
+        input_bc = Tensor(self.batch_size, self.num_channels, self.crop_size, self.crop_size)
+
+        #load train dataset
+        dataloader = self.load_dataset(dataset='train', max_samples=self.max_train_samples)
+
+        sys.stdout = PrintLogger(self.save_dir)
+        # ----------
+        #  Training
+        # ----------
+        print('Training is started.')
+        avg_loss_G = []
+        avg_loss_D = []
+        # avg_mse = []
+        avg_psnr = []
+        avg_ssim = []
+        avg_ergas = []
+        avg_lpips = []
+        step = 0
+        start_time = time.time()
+
+        tensor_to_img = ToPILImage()
+        global val_psnr
+        global val_ssim
+        global val_ergas
+        global val_lpips
+        global val_psnr_max
+        global val_ssim_max
+        global val_ergas_max
+        global val_lpips_max
+        global val_loss_no_improve_count
+        global val_loss_noimprove_max_count
+        global val_loss_best_step
+        val_psnr = 0
+        val_ssim = 0
+        val_ergas = 0
+        val_lpips = 0
+        val_psnr_max = 0
+        val_ssim_max = 0
+        val_ergas_max = 10000
+        val_lpips_max = 10000
+        val_loss_no_improve_count = 0
+        val_loss_noimprove_max_count = 5
+        val_loss_best_step = 0
+        global epoch
+        epoch = self.epoch
+        while epoch < self.num_epochs and self.lr >= 0.00001:
+        # for epoch in range(self.epoch, self.num_epochs):
+            # learning rate is decayed by a factor of 10 every 20 epochs
+            # if (epoch + 1) % 10 == 0:
+            #     for param_group in optimizer_G.param_groups:
+            #         param_group["lr"] /= 2.0
+            #     print("Learning rate decay: lr={}".format(optimizer_G.param_groups[0]["lr"]))
+
+            epoch_loss_G = 0
+            for i, (input, target, bc_input, imgpath) in enumerate(dataloader):
+
+                # Configure model input
+                imgs_lr = Variable(input_lr.copy_(input))
+                imgs_hr = Variable(input_hr.copy_(target))
+                imgs_bc = Variable(input_bc.copy_(bc_input))
+
+                # ------------------
+                #  Train Generators
+                # ------------------
+
+                optimizer_G.zero_grad()
+
+                # Generate a high resolution image from low resolution input
+                gen_hr = self.generator(imgs_lr)
+                # pixel loss
+                pixel_loss_G = self.criterion_content(gen_hr, imgs_hr)
+                # Content loss
+                gen_features = self.feature_extractor(gen_hr)
+                real_features = Variable(self.feature_extractor(imgs_hr).data, requires_grad=False)
+                loss_content = self.criterion_content(gen_features, real_features)
+
+                # Total loss
+                loss_G = pixel_loss_G
+
+                loss_G.backward()
+                optimizer_G.step()
+                # optimizer_G.module.step()
+
+                print("[Epoch %d/%d] [Batch %d/%d] [G loss: %f]" %
+                      (epoch, self.num_epochs, i, len(dataloader), loss_G.item()))
+
+                epoch_loss_G += loss_G.data.item()
+                # tensorboard logging
+                self.logger.scalar_summary('loss_G', loss_G.item(), step + 1)
+
+                step += 1
+
+                batches_done = epoch * len(dataloader) + i
+                if batches_done % self.sample_interval == 0:
+                    # Save image sample
+                    # bc_imgs = srutils.img_interp(imgs_lr.cpu(), 4)
+                    bc_img = tensor_to_img(imgs_bc[0].cpu())
+                    bc_img = np.array(bc_img)
+
+                    hr_img = tensor_to_img(imgs_hr[0].cpu())
+                    hr_img = np.array(hr_img)
+
+                    gen_img = tensor_to_img(gen_hr[0].cpu())
+                    gen_img = np.array(gen_img)
+
+                    # mse = compare_mse(gen_img, hr_img)
+                    recon_psnr = compare_psnr(gen_img, hr_img)
+                    recon_ssim = compare_ssim(gen_img, hr_img, multichannel=True)
+                    recon_ergas = srutils.compare_ergas2(hr_img, gen_img, scale=self.scale_factor)
+                    recon_lpips = self.PerceptualModel.forward(gen_hr[0], imgs_hr[0], normalize=True).detach().item()
+
+                    # mse1 = compare_mse(bc_img, hr_img)
+                    bc_psnr = compare_psnr(bc_img, hr_img)
+                    bc_ssim = compare_ssim(bc_img, hr_img, multichannel=True)
+                    bc_ergas = srutils.compare_ergas2(hr_img, bc_img, scale=self.scale_factor)
+                    bc_lpips = self.PerceptualModel.forward(imgs_bc[0], imgs_hr[0], normalize=True).detach().item()
+
+                    result_imgs = [imgs_hr[0].cpu(), imgs_lr[0].cpu(), imgs_bc[0].cpu(), gen_hr[0].cpu()]
+                    psnrs = [None, None, bc_psnr, recon_psnr]
+                    ssims = [None, None, bc_ssim, recon_ssim]
+                    ergas = [None, None, bc_ergas, recon_ergas]
+                    lpips = [None, None, bc_lpips, recon_lpips]
+                    indicators = {"PSNR":psnrs, "SSIM":ssims, "ERGAS":ergas, "LPIPS":lpips}
+                    srutils.plot_result_by_name(result_imgs, indicators, batches_done, imgpath[0],
+                                                     save_dir=self.save_dir, is_training=True, show=False)
+                    # srutils.plot_test_result_by_name(result_imgs, psnrs, ssims, batches_done, imgpath[0], save_dir=self.save_dir, is_training=True, show=False)
+                    # save_image(torch.cat((gen_hr.data, imgs_hr.data), -2),
+                    #          'images/%d.png' % batches_done, normalize=True)
+                    # log
+                    time_elapsed = time.time() - start_time
+                    print_rlt = OrderedDict()
+                    print_rlt['model'] = self.model_name
+                    print_rlt['epoch'] = epoch
+                    print_rlt['iters'] = step
+                    # print_rlt['G_lr'] = optimizer_G.module.param_groups[0]['lr']
+                    # print_rlt['D_lr'] = optimizer_D.module.param_groups[0]['lr']
+                    print_rlt['G_lr'] = optimizer_G.param_groups[0]['lr']
+                    print_rlt['time'] = time_elapsed
+                    print_rlt['G_loss'] = loss_G.item()
+                    print_rlt['bicubic_psnr'] = bc_psnr
+                    print_rlt['bicubic_ssim'] = bc_ssim
+                    print_rlt['bicubic_ergas'] = bc_ergas
+                    print_rlt['bicubic_lpips'] = bc_lpips
+                    print_rlt['srwgan_psnr'] = recon_psnr
+                    print_rlt['srwgan_ssim'] = recon_ssim
+                    print_rlt['srwgan_ergas'] = recon_ergas
+                    print_rlt['srwgan_lpips'] = recon_lpips
+                    for k, v in self.log_dict.items():
+                        print_rlt[k] = v
+                    self.logger.print_format_results('train', print_rlt)
+
+                    del bc_img, hr_img, gen_img, recon_psnr, recon_ssim, recon_ergas, recon_lpips, bc_ssim, bc_psnr, bc_ergas, bc_lpips, result_imgs, psnrs, ssims
+                del imgs_hr, imgs_bc, imgs_lr, gen_hr, gen_features, real_features
+                torch.cuda.empty_cache()
+
+            # avg. loss per epoch
+            avg_loss_G.append(epoch_loss_G / len(dataloader))
+
+            val_psnr, val_ssim, val_ergas, val_lpips = self.validate(epoch=epoch, save_img=((epoch + 1) % self.save_epochs == 0))
+
+            avg_psnr.append(val_psnr)
+            avg_ssim.append(val_ssim)
+            avg_ergas.append(val_ergas)
+            avg_lpips.append(val_lpips)
+
+            if val_psnr - val_psnr_max > 0:
+                val_psnr_max = val_psnr
+                val_loss_no_improve_count = 0
+                val_loss_best_step = epoch
+            elif val_ssim - val_ssim_max > 0:
+                val_ssim_max = val_ssim
+                val_loss_no_improve_count = 0
+                val_loss_best_step = epoch
+            elif val_ergas - val_ergas_max < 0:
+                val_ergas_max = val_ergas
+                val_loss_no_improve_count = 0
+                val_loss_best_step = epoch
+            elif val_lpips - val_lpips_max < 0:
+                val_lpips_max = val_lpips
+                val_loss_no_improve_count = 0
+                val_loss_best_step = epoch
+            else:
+                val_loss_no_improve_count = val_loss_no_improve_count + 1
+
+            self.save_epoch_network(save_dir=model_dir, network=self.generator, network_label='generator',
+                                    iter_label=epoch + 1)
+            # global epoch
+            epoch += 1
+            if val_loss_no_improve_count >= val_loss_noimprove_max_count:
+                G_model_path = model_dir + '/generator_param_epoch_%d.pkl' % (val_loss_best_step + 1)
+                self.load_epoch_network(load_path=G_model_path, network=self.generator)
+                # for param_group in optimizer_G.module.param_groups:
+                #     param_group["lr"] /= 2.0
+                # print("Learning rate decay: lr={}".format(optimizer_G.module.param_groups[0]["lr"]))
+                for param_group in optimizer_G.param_groups:
+                    param_group["lr"] /= 2.0
+                print("optimizer_G_Learning rate decay: lr={}".format(optimizer_G.param_groups[0]["lr"]))
+                # global epoch
+                self.lr /= 2.0
+                epoch = val_loss_best_step + 1
+                val_loss_no_improve_count = 0
+                for _ in range(0, val_loss_noimprove_max_count):
+                    avg_psnr.pop()
+                    avg_ssim.pop()
+                    avg_ergas.pop()
+                    avg_lpips.pop()
+            # if opt.checkpoint_interval != -1 and epoch % opt.checkpoint_interval == 0:
+            #     # Save model checkpoints
+            #     torch.save(generator.state_dict(), 'saved_models/generator_%d.pth' % epoch)
+            # Save trained parameters of model
+            # if (epoch + 1) % self.save_epochs == 0:
+            #     # self.save_model(epoch + 1)
+            #     self.save_epoch_network(save_dir=model_dir, network=self.generator, network_label='generator', iter_label=epoch+1)
+            torch.cuda.empty_cache()
+        # Plot avg. loss
+        srutils.plot_loss([avg_loss_G], self.num_epochs, save_dir=self.save_dir)
+        srutils.plot_loss([avg_psnr], self.num_epochs, save_dir=self.save_dir, label='PSNR')
+        srutils.plot_loss([avg_ssim], self.num_epochs, save_dir=self.save_dir, label='SSIM')
+        srutils.plot_loss([avg_ergas], self.num_epochs, save_dir=self.save_dir, label='ERGAS')
+        srutils.plot_loss([avg_lpips], self.num_epochs, save_dir=self.save_dir, label='LPIPS')
+        print("Training is finished.")
+
+        # Save final trained parameters of model
+        self.save_model(epoch=None)
+
+    def validate(self, epoch=0, save_img=False):
+        # networks
+        cuda = True if torch.cuda.is_available() else False
+
+        # load model
+        if self.gpu_mode:
+            self.generator.cuda()
+
+        # load dataset
+        test_data_loader = self.load_dataset(dataset='test')
+
+        # Inputs & targets memory allocation
+        Tensor = torch.cuda.FloatTensor if cuda else torch.Tensor
+        input_lr = Tensor(self.test_batch_size, self.num_channels, self.hr_height // self.scale_factor, self.hr_width // self.scale_factor)
+        input_hr = Tensor(self.test_batch_size, self.num_channels, self.hr_height, self.hr_width)
+        input_bc = Tensor(self.test_batch_size, self.num_channels, self.hr_height, self.hr_width)
+        tensor_to_img = ToPILImage()
+        # Test
+        print('Test is started.')
+        img_num = 0
+        self.generator.eval()
+        start_time = time.time()
+        avg_bicubic_mse = 0.0
+        avg_bicubic_psnr = 0.0
+        avg_bicubic_ssim = 0.0
+        avg_bicubic_ergas = 0.0
+        avg_bicubic_lpips = 0.0
+        avg_srcnn_mse = 0.0
+        avg_srcnn_psnr = 0.0
+        avg_srcnn_ssim = 0.0
+        avg_srcnn_ergas = 0.0
+        avg_srcnn_lpips = 0.0
+        for iter, (input, target, bc_input, imgpath) in enumerate(test_data_loader):
+            # Configure model input
+            imgs_lr = Variable(input_lr.copy_(input))
+            imgs_hr = Variable(input_hr.copy_(target))
+            imgs_bc = Variable(input_bc.copy_(bc_input))
+
+            # prediction
+            recon_imgs = self.generator(imgs_lr)
+            for i in range(self.test_batch_size):
+                img_num += 1
+                recon_img = recon_imgs[i].cpu().data
+                gt_img = imgs_hr[i]  # utils.shave(target[i], border_size=8)
+                # lr_img = imgs_lr[i]
+                bc_img = imgs_bc[i]  # srutils.img_interp(lr_img.cpu(), 4)
+
+                # calculate psnrs
+                bc_img = tensor_to_img(bc_img.cpu())
+                bc_img = np.array(bc_img)
+
+                gt_img = tensor_to_img(gt_img.cpu())
+                gt_img = np.array(gt_img)
+
+                recon_img = tensor_to_img(recon_img.cpu())
+                recon_img = np.array(recon_img)
+                recon_mse = compare_mse(recon_img, gt_img)
+                recon_psnr = compare_psnr(recon_img, gt_img)
+                recon_ssim = compare_ssim(recon_img, gt_img, multichannel=True)
+                recon_ergas = srutils.compare_ergas2(gt_img, recon_img, scale=self.scale_factor)
+                # recon_lpips = srutils.compare_lpips(gt_img, recon_img, use_gpu=cuda)
+                recon_lpips = self.PerceptualModel.forward(recon_imgs[i], imgs_hr[i], normalize=True).detach().item()
+
+                bc_mse = compare_mse(bc_img, gt_img)
+                bc_psnr = compare_psnr(bc_img, gt_img)
+                bc_ssim = compare_ssim(bc_img, gt_img, multichannel=True)
+                bc_ergas = srutils.compare_ergas2(gt_img, bc_img, scale=self.scale_factor)
+                # bc_lpips = srutils.compare_lpips(gt_img, bc_img, use_gpu=cuda)
+                bc_lpips = self.PerceptualModel.forward(imgs_bc[i], imgs_hr[i], normalize=True).detach().item()
+
+                if save_img and iter % 50 == 0:
+                    # save result images
+                    result_imgs = [imgs_hr[i].cpu(), imgs_lr[i].cpu(), imgs_bc[i].cpu(), recon_imgs[i].cpu()]
+                    psnrs = [None, None, bc_psnr, recon_psnr]
+                    ssims = [None, None, bc_ssim, recon_ssim]
+                    ergas = [None, None, bc_ergas, recon_ergas]
+                    lpips = [None, None, bc_lpips, recon_lpips]
+                    indicators = {"PSNR": psnrs, "SSIM": ssims, "ERGAS": ergas, "LPIPS": lpips}
+                    # srutils.plot_test_result_by_name(result_imgs, psnrs, ssims, epoch, imgpath[i],
+                                                     # save_dir=self.save_dir)
+                    srutils.plot_result_by_name(result_imgs, indicators, epoch, imgpath[i],
+                                                save_dir=self.save_dir)
+
+                avg_bicubic_mse += bc_mse
+                avg_bicubic_psnr += bc_psnr
+                avg_bicubic_ssim += bc_ssim
+                avg_bicubic_ergas += bc_ergas
+                avg_bicubic_lpips += bc_lpips
+                avg_srcnn_mse += recon_mse
+                avg_srcnn_psnr += recon_psnr
+                avg_srcnn_ssim += recon_ssim
+                avg_srcnn_ergas += recon_ergas
+                avg_srcnn_lpips += recon_lpips
+                print("Saving %d test result images..." % img_num)
+
+                del bc_img, gt_img, recon_img, recon_psnr, recon_ssim, recon_mse, recon_ergas, recon_lpips, bc_mse, bc_ssim, bc_psnr, bc_ergas, bc_lpips
+            del imgs_hr, imgs_bc, imgs_lr, recon_imgs
+            torch.cuda.empty_cache()
+
+        avg_bicubic_mse = avg_bicubic_mse / img_num
+        avg_bicubic_psnr = avg_bicubic_psnr / img_num
+        avg_bicubic_ssim = avg_bicubic_ssim / img_num
+        avg_bicubic_ergas = avg_bicubic_ergas / img_num
+        avg_bicubic_lpips = avg_bicubic_lpips / img_num
+        avg_srcnn_mse = avg_srcnn_mse / img_num
+        avg_srcnn_psnr = avg_srcnn_psnr / img_num
+        avg_srcnn_ssim = avg_srcnn_ssim / img_num
+        avg_srcnn_ergas = avg_srcnn_ergas / img_num
+        avg_srcnn_lpips = avg_srcnn_lpips / img_num
+        time_elapsed = time.time() - start_time
+        # Save to log
+        print_rlt = OrderedDict()
+        print_rlt['model'] = self.model_name
+        print_rlt['epoch'] = epoch
+        print_rlt['iters'] = epoch
+        print_rlt['time'] = time_elapsed
+        print_rlt['bicubic_mse'] = avg_bicubic_mse
+        print_rlt['bicubic_psnr'] = avg_bicubic_psnr
+        print_rlt['bicubic_ssim'] = avg_bicubic_ssim
+        print_rlt['bicubic_ergas'] = avg_bicubic_ergas
+        print_rlt['bicubic_lpips'] = avg_bicubic_lpips
+        print_rlt['srcnn_mse'] = avg_srcnn_mse
+        print_rlt['srcnn_psnr'] = avg_srcnn_psnr
+        print_rlt['srcnn_ssim'] = avg_srcnn_ssim
+        print_rlt['srcnn_ergas'] = avg_srcnn_ergas
+        print_rlt['srcnn_lpips'] = avg_srcnn_lpips
+        self.logger.print_format_results('val', print_rlt)
+        print('-----------------------------------')
+        del test_data_loader
+        torch.cuda.empty_cache()
+        return avg_srcnn_psnr, avg_srcnn_ssim, avg_srcnn_ergas, avg_srcnn_lpips
+
+    # helper saving function that can be used by subclasses
+    def save_epoch_network(self, save_dir, network, network_label, iter_label):
+        if not os.path.exists(save_dir):
+            os.mkdir(save_dir)
+        save_filename = '{}_param_epoch_{}.pkl'.format(network_label, iter_label)
+        save_path = os.path.join(save_dir, save_filename)
+        if isinstance(network, nn.DataParallel):
+            network = network.module
+        state_dict = network.state_dict()
+        for key, param in state_dict.items():
+            state_dict[key] = param.cpu()
+        torch.save(state_dict, save_path)
+
+    # helper loading function that can be used by subclasses
+    def load_epoch_network(self, load_path, network, strict=True):
+        if isinstance(network, nn.DataParallel):
+            network = network.module
+        network.load_state_dict(torch.load(load_path), strict=strict)
+        print('Trained model is loaded.')
+
+    def save_model(self, epoch=None):
+        model_dir = os.path.join(self.save_dir, 'model')
+        if not os.path.exists(model_dir):
+            os.mkdir(model_dir)
+        if epoch is not None:
+            torch.save(self.generator.state_dict(), model_dir + '/generator_param_epoch_%d.pkl' % epoch)
+        else:
+            torch.save(self.generator.state_dict(), model_dir + '/generator_param.pkl')
+        print('Trained model is saved.')
+
+    def load_model(self):
+        model_dir = os.path.join(self.save_dir, 'model')
+        model_name = model_dir + '/generator_param.pkl'
+        if os.path.exists(model_name):
+            self.generator.load_state_dict(torch.load(model_name), strict=False)
+            print('Trained model is loaded.')
+            return True
+        else:
+            print('No model exists to load.')
+            return False
+
+    def load_epoch_model(self, epoch):
+        model_dir = os.path.join(self.save_dir, 'model')
+        model_name = model_dir + '/generator_param_epoch_%d.pkl' % epoch
+        if os.path.exists(model_name):
+            self.generator.load_state_dict(torch.load(model_name))
+            print('Trained model is loaded.')
+            return True
+        else:
+            print('No model exists to load.')
+            return False
+
+    def mfeNew_validate(self, epoch=100, modelpath=None):
+        # networks
+        cuda = True if torch.cuda.is_available() else False
+
+        # load model
+        self.generator = GeneratorResNet(conv=default_conv, n_resgroups=10, n_resblocks=16, n_feats=64, reduction=16,
+                                         upscale_factor=self.scale_factor)
+        if self.gpu_mode:
+            self.generator.cuda()
+
+        if modelpath is not None:
+            self.generator.load_state_dict(torch.load(modelpath), strict=False)
+
+        # self.generator.eval()
+
+        # load dataset
+        test_data_loader = self.load_dataset(dataset='test')
+
+        # Inputs & targets memory allocation
+        Tensor = torch.cuda.FloatTensor if cuda else torch.Tensor
+        input_lr = Tensor(self.test_batch_size, self.num_channels, self.hr_height // self.scale_factor, self.hr_width // self.scale_factor)
+        input_hr = Tensor(self.test_batch_size, self.num_channels, self.hr_height, self.hr_width)
+        input_bc = Tensor(self.test_batch_size, self.num_channels, self.hr_height, self.hr_width)
+        tensor_to_img = ToPILImage()
+        # Test
+        print('Test is started.')
+        img_num = 0
+        self.generator.eval()
+        start_time = time.time()
+        avg_bicubic_mse = 0.0
+        avg_bicubic_psnr = 0.0
+        avg_bicubic_ssim = 0.0
+        avg_bicubic_ergas = 0.0
+        avg_bicubic_lpips = 0.0
+        avg_srcnn_mse = 0.0
+        avg_srcnn_psnr = 0.0
+        avg_srcnn_ssim = 0.0
+        avg_srcnn_ergas = 0.0
+        avg_srcnn_lpips = 0.0
+        for iter, (input, target, bc_input, imgpath) in enumerate(test_data_loader):
+            # Configure model input
+            imgs_lr = Variable(input_lr.copy_(input))
+            imgs_hr = Variable(input_hr.copy_(target))
+            imgs_bc = Variable(input_bc.copy_(bc_input))
+
+            # prediction
+            recon_imgs = self.generator(imgs_lr)
+            for i in range(self.test_batch_size):
+                img_num += 1
+                recon_img = recon_imgs[i].cpu().data
+                gt_img = imgs_hr[i]  # utils.shave(target[i], border_size=8)
+                # lr_img = imgs_lr[i]
+                bc_img = imgs_bc[i]  # srutils.img_interp(lr_img.cpu(), 4)
+
+                # calculate psnrs
+                bc_img = tensor_to_img(bc_img.cpu())
+                bc_img = np.array(bc_img)
+
+                gt_img = tensor_to_img(gt_img.cpu())
+                gt_img = np.array(gt_img)
+
+                recon_img = tensor_to_img(recon_img.cpu())
+                recon_img = np.array(recon_img)
+                recon_mse = compare_mse(recon_img, gt_img)
+                recon_psnr = compare_psnr(recon_img, gt_img)
+                recon_ssim = compare_ssim(recon_img, gt_img, multichannel=True)
+                recon_ergas = srutils.compare_ergas2(gt_img, recon_img, scale=self.scale_factor)
+                recon_lpips = self.PerceptualModel.forward(recon_imgs[i], imgs_hr[i], normalize=True).detach().item()
+
+                bc_mse = compare_mse(bc_img, gt_img)
+                bc_psnr = compare_psnr(bc_img, gt_img)
+                bc_ssim = compare_ssim(bc_img, gt_img, multichannel=True)
+                bc_ergas = srutils.compare_ergas2(gt_img, bc_img, scale=self.scale_factor)
+                bc_lpips = self.PerceptualModel.forward(imgs_bc[i], imgs_hr[i], normalize=True).detach().item()
+
+                result_imgs = [imgs_hr[i].cpu(), imgs_lr[i].cpu(), imgs_bc[i].cpu(), recon_imgs[i].cpu()]
+                mses = [None, None, bc_mse, recon_mse]
+                psnrs = [None, None, bc_psnr, recon_psnr]
+                ssims = [None, None, bc_ssim, recon_ssim]
+                ergas = [None, None, bc_ergas, recon_ergas]
+                lpips = [None, None, bc_lpips, recon_lpips]
+                #srutils.mfe_plot_test_result2(result_imgs, mses, psnrs, ssims, ergas, lpips, img_num, save_dir=self.save_dir)
+
+
+                datasetName = os.path.splitext(os.path.basename(imgpath[0]))[0]
+                indicators = {"PSNR": psnrs, "SSIM": ssims, "ERGAS": ergas, "LPIPS": lpips}
+                srutils.plot_result_by_name(result_imgs, indicators, epoch, imgpath[i], is_training=False,
+                                            is_validation=True, classname=datasetName, save_dir=self.save_dir)
+                img_dir = os.path.join(self.save_dir, 'validate',
+                                       '{:s}_x{:d}_{:d}.png'.format(datasetName, self.scale_factor, epoch))
+                srutils.save_img1(recon_imgs[i].cpu(), os.path.join(self.save_dir, 'validate'), img_dir, cuda=cuda)
+
+
+                avg_bicubic_mse += bc_mse
+                avg_bicubic_psnr += bc_psnr
+                avg_bicubic_ssim += bc_ssim
+                avg_bicubic_ergas += bc_ergas
+                avg_bicubic_lpips += bc_lpips
+                avg_srcnn_mse += recon_mse
+                avg_srcnn_psnr += recon_psnr
+                avg_srcnn_ssim += recon_ssim
+                avg_srcnn_ergas += recon_ergas
+                avg_srcnn_lpips += recon_lpips
+                print("Saving the %d test dataset images" % img_num)
+
+                del bc_img, gt_img, recon_img, recon_psnr, recon_ssim, recon_mse, recon_ergas, recon_lpips, bc_mse, bc_ssim, bc_psnr, bc_ergas, bc_lpips
+            del imgs_hr, imgs_bc, imgs_lr, recon_imgs
+            torch.cuda.empty_cache()
+
+        avg_bicubic_mse = avg_bicubic_mse / img_num
+        avg_bicubic_psnr = avg_bicubic_psnr / img_num
+        avg_bicubic_ssim = avg_bicubic_ssim / img_num
+        avg_bicubic_ergas = avg_bicubic_ergas / img_num
+        avg_bicubic_lpips = avg_bicubic_lpips / img_num
+        avg_srcnn_mse = avg_srcnn_mse / img_num
+        avg_srcnn_psnr = avg_srcnn_psnr / img_num
+        avg_srcnn_ssim = avg_srcnn_ssim / img_num
+        avg_srcnn_ergas = avg_srcnn_ergas / img_num
+        avg_srcnn_lpips = avg_srcnn_lpips / img_num
+        time_elapsed = time.time() - start_time
+        # Save to log
+        print_rlt = OrderedDict()
+        print_rlt['model'] = self.model_name
+        print_rlt['epoch'] = epoch
+        print_rlt['iters'] = epoch
+        print_rlt['time'] = time_elapsed
+        print_rlt['bicubic_mse'] = avg_bicubic_mse
+        print_rlt['bicubic_psnr'] = avg_bicubic_psnr
+        print_rlt['bicubic_ssim'] = avg_bicubic_ssim
+        print_rlt['bicubic_ergas'] = avg_bicubic_ergas
+        print_rlt['bicubic_lpips'] = avg_bicubic_lpips
+        print_rlt['egasr_mse'] = avg_srcnn_mse
+        print_rlt['egasr_psnr'] = avg_srcnn_psnr
+        print_rlt['egasr_ssim'] = avg_srcnn_ssim
+        print_rlt['egasr_ergas'] = avg_srcnn_ergas
+        print_rlt['egasr_lpips'] = avg_srcnn_lpips
+        self.logger.print_format_results('val', print_rlt)
+        print('-----------------------------------')
+        del test_data_loader
+        torch.cuda.empty_cache()
+        return avg_srcnn_psnr, avg_srcnn_ssim, avg_srcnn_ergas, avg_srcnn_lpips
