@@ -18,20 +18,20 @@ Our folder structure is as follows:
 ```
 ├── code (python and javascript)
 │   ├── SR Model (12 deep learning SR models for the L8S2PS-SR dataset)
-│   │   ├── dataset
+│   │   ├── dataset    (Pairs of the L8S2 or S2PS subdatasets)
 │   │   ├── MSI_SR_model_x3
-│   │   │   ├── main_amssrn.py
-│   │   │   ├── main_drcan.py
-│   │   │   ├── main_dssr.py
-│   │   │   ├── main_egasr.py
-│   │   │   ├── main_esrgan.py
-│   │   │   ├── main_hat.py
-│   │   │   ├── main_ndsrgan.py
-│   │   │   ├── main_sradsgan.py
-│   │   │   ├── main_sragan.py
-│   │   │   ├── main_swinir.py
-│   │   │   ├── main_transenet.py
-│   │   │   ├── main_ttst.py
+│   │   │   ├── main_amssrn.py      (python main_amssrn.py  # train and test)
+│   │   │   ├── main_drcan.py       (python main_drcan.py  # train and test)
+│   │   │   ├── main_dssr.py        (python main_dssr.py  # train and test)
+│   │   │   ├── main_egasr.py       (python main_egasr.py  # train and test)
+│   │   │   ├── main_esrgan.py      (python main_esrgan.py  # train and test)
+│   │   │   ├── main_hat.py         (python main_hat.py  # train and test)
+│   │   │   ├── main_ndsrgan.py     (python main_ndsrgan.py  # train and test)
+│   │   │   ├── main_sradsgan.py    (python main_sradsgan.py  # train and test)
+│   │   │   ├── main_sragan.py      (python main_sragan.py  # train and test)
+│   │   │   ├── main_swinir.py      (python main_swinir.py  # train and test)
+│   │   │   ├── main_transenet.py   (python main_transenet.py  # train and test)
+│   │   │   ├── main_ttst.py        (python main_ttst.py  # train and test)
 │   ├── Data preparation on GEE
 │   │   ├── Global Map
 │   │   │   ├── ne_50m_land
@@ -51,10 +51,9 @@ Our folder structure is as follows:
 ```
 
 
-
 ## L8S2PS-SR
-
-- Download the L8S2PS-SR dataset by [[Baidu Cloud Disk (code: L8PS)](https://pan.baidu.com/s/1MrYTAOhbUgrZsBCLAptbKQ)] or [[Kaggle platform](https://www.kaggle.com/mengfanen/datasets)] to your disk, the organized directory looks like:
+- Quickly download the demo dataset of L8S2PS-SR used in the paper[[Baidu Cloud Disk (code: demo)](https://pan.baidu.com/s/1AmqSB3HznH_mDTxuBy3OVQ?pwd=demo)].
+- Download the entire L8S2PS-SR dataset by [[Baidu Cloud Disk (code: L8PS)](https://pan.baidu.com/s/1MrYTAOhbUgrZsBCLAptbKQ)] or [[Kaggle platform](https://www.kaggle.com/mengfanen/datasets)] to your disk, the organized directory looks like:
 
   ```
   ├── Landsat8-Sentinel1-Sentinel2
