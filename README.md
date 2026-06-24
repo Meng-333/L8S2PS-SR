@@ -4,13 +4,9 @@
 
 ## Paper
 
-  - The implementation for "Deep Learning for Remote Sensing Image Super-Resolution: A Comprehensive Review and a New Real-world Benchmark"
-
-  - Our review manuscript has been submitted to the journal and is currently under review.
-
-  - Here is the first commit, more illustrations of the implementation will be released soon.
-
-    
+Fanen Meng, Sensen Wu, Yi Xiao, Qiangqiang Yuan, Zhiguo Jiang, Fengying Xie, Zhenhong Du, Haopeng Zhang
+IEEE Geoscience and Remote Sensing Magazine, vol. 62, pp. 1-22
+https://ieeexplore.ieee.org/document/10375518
     
     ![](/fig/fig1.png)
 
