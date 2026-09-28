@@ -129,7 +129,7 @@ If you find our code and dataset helpful for your research or work, please consi
 
 ```
 F. Meng et al., "Deep Learning for Remote Sensing Image Super-Resolution: A Comprehensive Review and a New Real-world Benchmark,"
-in IEEE Geoscience and Remote Sensing Magazine, vol. 62, pp. 1-22, 2026, Art no. 5400822,
+in IEEE Geoscience and Remote Sensing Magazine, 
 doi: 10.1109/MGRS.2026.3706999.
 ```
 
