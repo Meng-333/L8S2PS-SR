@@ -5,8 +5,8 @@
 ## Review Paper
 
   - Fanen Meng, Sensen Wu, Yi Xiao, Qiangqiang Yuan, Zhiguo Jiang, Fengying Xie, Zhenhong Du, Haopeng Zhang
-  - *IEEE Geoscience and Remote Sensing Magazine*, vol. 62, pp. 1-22
-  - https://ieeexplore.ieee.org/document/10375518
+  - *IEEE Geoscience and Remote Sensing Magazine*, doi: 10.1109/MGRS.2026.3706999
+  - https://ieeexplore.ieee.org/document/11688106
 
 ![](/fig/fig.1.png)
 Fig. 1. An outline of this paper.
